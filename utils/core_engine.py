@@ -107,6 +107,43 @@ def _load_dotenv(path: str = ".env") -> None:
 
 _load_dotenv()
 
+_tunnel_manager_lock = threading.Lock()
+
+
+def _ensure_cpa_tunnel() -> bool:
+    manager_url = (os.getenv("TUNNEL_MANAGER_URL") or "").strip().rstrip("/")
+    if not manager_url:
+        return True
+    try:
+        with _tunnel_manager_lock:
+            resp = requests.get(
+                f"{manager_url}/ensure",
+                timeout=8,
+                impersonate="chrome110",
+            )
+        if resp.status_code == 200:
+            return True
+        print(f"[{ts()}] [WARNING] Tunnel manager ensure failed: HTTP {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"[{ts()}] [WARNING] Tunnel manager ensure exception: {e}")
+    return False
+
+
+def _release_cpa_tunnel() -> bool:
+    manager_url = (os.getenv("TUNNEL_MANAGER_URL") or "").strip().rstrip("/")
+    if not manager_url:
+        return True
+    try:
+        with _tunnel_manager_lock:
+            resp = requests.get(
+                f"{manager_url}/health",
+                timeout=5,
+                impersonate="chrome110",
+            )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
 def _normalize_cpa_auth_files_url(api_url: str) -> str:
     normalized = (api_url or "").strip().rstrip("/")
     lower = normalized.lower()
@@ -144,6 +181,7 @@ def set_cpa_auth_file_status(
 def upload_to_cpa_integrated(
     token_data: dict, api_url: str, api_token: str, custom_filename: str = None
 ) -> Tuple[bool, str]:
+    _ensure_cpa_tunnel()
     upload_url = _normalize_cpa_auth_files_url(api_url)
     filename   = custom_filename or f"{token_data.get('email', 'unknown')}.json"
     file_content = json.dumps(token_data, ensure_ascii=False, indent=2).encode("utf-8")
@@ -904,6 +942,7 @@ def normal_main_loop(args, stop_event: threading.Event):
 
 
 async def perform_cpa_check(args, async_stop_event, loop):
+    _ensure_cpa_tunnel()
     print(f"[{ts()}] [INFO] 开始执行 CPA 仓库全量测活巡检...")
     res = requests.get(
         _normalize_cpa_auth_files_url(cfg.CPA_API_URL),
@@ -988,6 +1027,7 @@ async def cpa_main_loop(args, async_stop_event: asyncio.Event):
                 valid_count, total_files = await perform_cpa_check(args, async_stop_event, loop)
             else:
                 print(f"\n[{ts()}] [INFO] 自动测活已关闭，直接读取云端列表进行补发判断...")
+                _ensure_cpa_tunnel()
                 res = requests.get(
                     _normalize_cpa_auth_files_url(cfg.CPA_API_URL),
                     headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"},
